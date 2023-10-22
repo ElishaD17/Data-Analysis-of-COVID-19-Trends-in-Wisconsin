@@ -1,0 +1,668 @@
+filename webdat url "https://bigblue.depaul.edu/jlee141/econdata/eco520/COVID19_WI22.csv" ;
+proc import datafile=webdat out = COVID19 DBMS = csv  replace ; run ;
+run ;
+
+/*Select 500 randomly selected census tracts in WI using YourDePaulID  */
+proc surveyselect data= COVID19  method=srs seed= 2125288
+     N=500 out= MYCOVID19 ;
+run;
+proc contents data=MYCOVID19 ; 
+run ;
+
+/* DATA STEPS */
+data MYCOVID19_updated;
+    set MYCOVID19;
+
+    /* Create the percent variables */
+    Pct_POSITIVE = 100 * POSITIVE / POPULATION;
+    Pct_DEATH = 100 * DEATHS / POPULATION;
+    Pct_HOSP_POSITIVE = 100 * HOSP_YES / POSITIVE;
+    Pct_POSTIVE_TEST = 100 * POSITIVE / (NEGATIVE + POSITIVE);
+
+    /* Create SIZE_CLASS variable */
+    if POPULATION < 2000 then SIZE_CLASS = 1;
+    else if 2000 <= POPULATION < 5000 then SIZE_CLASS = 2;
+    else if POPULATION >= 5000 then SIZE_CLASS = 3;
+
+    /* Remove observations with missing or zero for GEOID or POPULATION */
+    if GEOID = . or GEOID = 0 then delete;
+    if POPULATION = . or POPULATION = 0 then delete;
+
+run;
+/* Average percentage of confirmed cases, hospitalized, and death rates by County*/
+proc means data=MYCOVID19_updated mean;
+    class COUNTY;
+    var Pct_POSITIVE Pct_HOSP_POSITIVE Pct_DEATH;
+    output out=CountyStats mean=;
+run;
+
+proc sort data=CountyStats;
+    by descending Pct_POSITIVE descending Pct_DEATH descending Pct_HOSP_POSITIVE;
+run;
+
+proc print data=CountyStats(obs=5);
+    title "Top 5 Counties by Positive, Death, and Hospitalized Rates";
+run;
+/*or*/
+* List the top 5 counties for positive, death, and hospitalized rates */
+proc sort data=avg_rates; by descending Pct_POSITIVE; run; 
+proc print data=avg_rates(obs=5); var COUNTY Pct_POSITIVE; run;
+
+proc sort data=avg_rates; by descending Pct_DEATH; run; 
+proc print data=avg_rates(obs=5); var COUNTY Pct_DEATH; run;
+
+proc sort data=avg_rates; by descending Pct_HOSP_POSITIVE; run; 
+proc print data=avg_rates(obs=5); var COUNTY Pct_HOSP_POSITIVE; run;
+
+/*Descriptive statistics and graphs*/
+proc sgplot data=MYCOVID19_updated;
+    histogram Pct_POSITIVE / group=SIZE_CLASS;
+    histogram Pct_DEATH / group=SIZE_CLASS;
+    histogram Pct_HOSP_POSITIVE / group=SIZE_CLASS;
+    title "Histograms of Percentage Metrics by Census Tract Size";
+run;
+
+proc means data=MYCOVID19_updated;
+    class SIZE_CLASS;
+    var Pct_POSITIVE Pct_DEATH Pct_HOSP_POSITIVE;
+    title "Descriptive Statistics by Census Tract Size";
+run;
+
+/*Correlation coefficients*/
+proc corr data=MYCOVID19_updated;
+    var Pct_POSITIVE;
+    with ADULT_LIMITED_ENGLISH ADULT_SPANISH_LENG POP_BELOWPOV POP_DISABILITY
+         POP_MEDICAD POP_MEDICARE POP_HEALTHINS HOUS_NOSMARTPHN HOUS_NOINTERNET;
+    title "Correlation with Pct_POSITIVE";
+run;
+
+proc sgplot data=MYCOVID19_updated;
+    scatter x=Pct_POSITIVE y=ADULT_SPANISH_LENG;
+    title "Scatter Plot of Pct_POSITIVE vs. ADULT_SPANISH_LENG";
+run;
+
+/* Hierarchical and Non-hierarchical Clustering Analysis*/
+/* Hierarchical Clustering for POPULATION, POP_65P, and POP_LT18 */
+
+proc cluster data=MYCOVID19_updated method=centroid print=15 ccc pseudo;
+    var POPULATION POP_65P POP_LT18;
+    id GEOID;
+run;
+
+proc tree noprint ncl=5 out=HierarchicalClusters;
+    copy GEOID POPULATION POP_65P POP_LT18;
+run;
+
+proc summary data=HierarchicalClusters print n mean min median max std;
+    var POPULATION POP_65P POP_LT18;
+    class cluster;
+run;
+
+/* NoN-Hierarchical Clustering for POPULATION, POP_65P, and POP_LT18 */
+
+proc fastclus data=MYCOVID19_updated out=clust maxclusters=5; 
+      var  POPULATION POP_65P POP_LT18;
+run;
+
+proc summary data=clust print n mean min median max std; 
+      var  POPULATION POP_65P POP_LT18;
+      class cluster ;
+run ;
+
+
+proc sgplot data=clust;
+    scatter x=POPULATION y=POP_65P / group=cluster markerattrs=(symbol=circlefilled);
+    scatter x=POPULATION y=POP_LT18 / group=cluster markerattrs=(symbol=diamondfilled);
+    xaxis label='Population';
+    yaxis label='Percentage';
+    keylegend / position=NE;
+run;
+
+/* ANOVA for Hierarchical Clusters */
+/* Sort HierarchicalClusters by GEOID */
+proc sort data=HierarchicalClusters; 
+    by GEOID; 
+run;
+
+/* Sort MYCOVID19_updated by GEOID */
+proc sort data=MYCOVID19_updated; 
+    by GEOID; 
+run;
+
+/* Merge the datasets */
+data MergedData;
+    merge HierarchicalClusters (in=a) MYCOVID19_updated (in=b keep=GEOID Pct_POSITIVE);
+    by GEOID;
+    if a and b;
+run;
+
+/* Now, run the ANOVA */
+PROC GLM DATA=MergedData;
+    CLASS cluster;
+    MODEL Pct_POSITIVE = cluster;
+    MEANS cluster / TUKEY;
+run; 
+
+/* Sort clust by GEOID */
+proc sort data=clust; 
+    by GEOID; 
+run;
+
+/* Merge the datasets */
+data MergedData_NonHier;
+    merge clust (in=a) MYCOVID19_updated (in=b keep=GEOID Pct_POSITIVE);
+    by GEOID;
+    if a and b;
+run;
+
+/* Now, run the ANOVA for non-hierarchical clusters */
+PROC GLM DATA=MergedData_NonHier;
+    CLASS cluster;
+    MODEL Pct_POSITIVE = cluster;
+    MEANS cluster / TUKEY;
+    TITLE "ANOVA for Non-Hierarchical Clusters with Confirmed Cases Rate";
+RUN;
+
+
+/* For Hierarchical Clusters */
+
+/* Merge the datasets */
+data MergedData_Hierarchical;
+    merge HierarchicalClusters (in=a) MYCOVID19_updated (in=b keep=GEOID Pct_HOSP_POSITIVE);
+    by GEOID;
+    if a and b;
+run;
+
+/* ANOVA for Hierarchical Clusters with Hospitalization Rate */
+PROC GLM DATA=MergedData_Hierarchical;
+    CLASS cluster;
+    MODEL Pct_HOSP_POSITIVE = cluster;
+    MEANS cluster / TUKEY;
+    TITLE "ANOVA for Hierarchical Clusters with Hospitalization Rate";
+RUN;
+
+/* For Non-Hierarchical Clusters */
+
+/* Merge the datasets */
+data MergedData_NonHier;
+    merge clust (in=a) MYCOVID19_updated (in=b keep=GEOID Pct_HOSP_POSITIVE);
+    by GEOID;
+    if a and b;
+run;
+
+/* ANOVA for Non-Hierarchical Clusters with Hospitalization Rate */
+PROC GLM DATA=MergedData_NonHier;
+    CLASS cluster;
+    MODEL Pct_HOSP_POSITIVE = cluster;
+    MEANS cluster / TUKEY;
+    TITLE "ANOVA for Non-Hierarchical Clusters with Hospitalization Rate";
+RUN;
+
+proc contents data=MYCOVID19_updated; 
+run;
+
+/*Split the data into training and test sets*/
+/* Randomly split data into training (70%) and test (30%) sets */
+proc surveyselect data=MYCOVID19_updated out=train 
+                  samprate=0.7 
+                  outall
+                  seed=12345; 
+run;
+
+data test;
+    set train (where=(selected=0));
+run;
+
+data train;
+    set train (where=(selected=1));
+    drop selected;
+run;
+
+/*Model 1: Simple Regression Model with your choice of one independent variable*/
+/* Step 1: Define the training dataset */
+data train_data; 
+set train; 
+y = Pct_DEATH; 
+run; 
+
+/* Step 2: Regression using train data */
+proc reg data=train_data;
+model y = POPULATION; 
+output out=train_predicted p=yhat_train; 
+run; 
+
+/* Step 3: Use the model to predict on the test data */
+data test_data;
+set test;
+y = Pct_DEATH;
+run;
+
+proc reg data=test_data noprint;
+model y = POPULATION; 
+output out=predicted_data p=yhat; 
+run;
+
+/* Step 4: Evaluation of the predictions on the test cases */
+data test_eval; 
+set predicted_data; 
+yorg = Pct_DEATH;
+e1 = yorg - yhat;
+rmse1 = ((e1)**2)**0.5; 
+mse1 = (e1)**2; 
+mae1 = abs(e1); 
+mpe1 = abs((e1)/yorg); 
+run;
+
+proc means n mean data=test_eval; 
+var rmse1 mse1 mae1 mpe1; 
+run;
+
+/* Model 2: Regression Model with two independent variables: POP_65P and HOUS_NOINTERNET */
+
+/* Step 1: Define the training dataset */
+data train_data2; 
+set train; 
+y = Pct_DEATH; 
+run; 
+
+/* Step 2: Regression using train data with two independent variables */
+proc reg data=train_data2;
+model y = POP_65P HOUS_NOINTERNET; 
+output out=train_predicted2 p=yhat_train2; 
+run; 
+
+/* Step 3: Use the model to predict on the test data */
+data test_data2;
+set test;
+y = Pct_DEATH;
+run;
+
+proc reg data=test_data2 noprint;
+model y = POP_65P HOUS_NOINTERNET; 
+output out=predicted_data2 p=yhat2; 
+run;
+
+/* Step 4: Evaluation of the predictions on the test cases */
+data test_eval2; 
+set predicted_data2; 
+yorg = Pct_DEATH;
+e2 = yorg - yhat2;
+rmse2 = ((e2)**2)**0.5; 
+mse2 = (e2)**2; 
+mae2 = abs(e2); 
+mpe2 = abs((e2)/yorg); 
+run;
+
+proc means n mean data=test_eval2; 
+var rmse2 mse2 mae2 mpe2; 
+run;
+
+/* Model 3: Regression Model with all possible independent variables */
+
+/* Step 1: Define the training dataset */
+data train_data3; 
+set train; 
+y = Pct_DEATH; 
+run; 
+
+/* Step 2: Regression using train data with all independent variables */
+proc reg data=train_data3;
+model y = POPULATION POP_65P POP_LT18 ADULT_LIMITED_ENGLISH ADULT_SPANISH_LENG
+          POP_BELOWPOV POP_DISABILITY POP_MEDICAD POP_MEDICARE POP_HEALTHINS
+          HOUS_NOSMARTPHN HOUS_NOINTERNET AREA_LAND AREA_WATER; 
+output out=train_predicted3 p=yhat_train3; 
+run; 
+
+/* Step 3: Use the model to predict on the test data */
+data test_data3;
+set test;
+y = Pct_DEATH;
+run;
+
+proc reg data=test_data3 noprint;
+model y = POPULATION POP_65P POP_LT18 ADULT_LIMITED_ENGLISH ADULT_SPANISH_LENG
+          POP_BELOWPOV POP_DISABILITY POP_MEDICAD POP_MEDICARE POP_HEALTHINS
+          HOUS_NOSMARTPHN HOUS_NOINTERNET AREA_LAND AREA_WATER; 
+output out=predicted_data3 p=yhat3; 
+run;
+
+/* Step 4: Evaluation of the predictions on the test cases */
+data test_eval3; 
+set predicted_data3; 
+yorg = Pct_DEATH;
+e3 = yorg - yhat3;
+rmse3 = ((e3)**2)**0.5; 
+mse3 = (e3)**2; 
+mae3 = abs(e3); 
+mpe3 = abs((e3)/yorg); 
+run;
+
+proc means n mean data=test_eval3; 
+var rmse3 mse3 mae3 mpe3; 
+run;
+
+/* Model 4: Stepwise Regression */
+
+/* Step 1: Define the training dataset */
+data train_data4; 
+set train; 
+y = Pct_DEATH; 
+run; 
+
+/* Step 2: Regression using train data with stepwise selection */
+proc reg data=train_data4;
+model y = POPULATION POP_65P POP_LT18 ADULT_LIMITED_ENGLISH ADULT_SPANISH_LENG
+          POP_BELOWPOV POP_DISABILITY POP_MEDICAD POP_MEDICARE POP_HEALTHINS
+          HOUS_NOSMARTPHN HOUS_NOINTERNET AREA_LAND AREA_WATER / selection=stepwise; 
+output out=train_predicted4 p=yhat_train4; 
+run; 
+
+/* Step 3: Use the stepwise model to predict on the test data */
+/* Note: The variables selected in the stepwise model should be used here for prediction */
+data test_data4;
+set test;
+y = Pct_DEATH;
+run;
+
+/*  */
+proc reg data=test_data4 noprint;
+model y = POP_65P POP_MEDICAD AREA_WATER HOUS_NOSMARTPHN POPULATION POP_DISABILITY; 
+output out=predicted_data4 p=yhat4; 
+run;
+
+/* Step 4: Evaluation of the predictions on the test cases */
+data test_eval4; 
+set predicted_data4; 
+yorg = Pct_DEATH; 
+e4 = yorg - yhat4;
+rmse4 = ((e4)**2)**0.5; 
+mse4 = (e4)**2; 
+mae4 = abs(e4); 
+mpe4 = abs((e4)/yorg); 
+run;
+
+proc means n mean data=test_eval4; 
+var rmse4 mse4 mae4 mpe4; 
+run;
+
+/* Model 5: Adjusted R-Square Model */
+
+/* Step 1: Define the training dataset */
+data train_data5; 
+set train; 
+y = Pct_DEATH; 
+run; 
+
+/* Step 2: Regression using train data with adjusted R-square selection */
+proc reg data=train_data5;
+model y = POPULATION POP_65P POP_LT18 ADULT_LIMITED_ENGLISH ADULT_SPANISH_LENG
+          POP_BELOWPOV POP_DISABILITY POP_MEDICAD POP_MEDICARE POP_HEALTHINS
+          HOUS_NOSMARTPHN HOUS_NOINTERNET AREA_LAND AREA_WATER / selection=adjrsq; 
+output out=train_predicted5 p=yhat_train5; 
+run; 
+
+/* Step 3: Use the adjusted R-square model to predict on the test data */
+data test_data5;
+set test;
+y = Pct_DEATH; 
+run;
+
+
+proc reg data=test_data5 noprint;
+    model y = POPULATION POP_65P POP_DISABILITY POP_MEDICAD POP_HEALTHINS AREA_WATER; 
+    output out=predicted_data5 p=yhat5; 
+run;
+
+
+/* Step 4: Evaluation of the predictions on the test cases */
+data test_eval5; 
+set predicted_data5; 
+yorg = Pct_DEATH;
+e5 = yorg - yhat5;
+rmse5 = ((e5)**2)**0.5; 
+mse5 = (e5)**2; 
+mae5 = abs(e5); 
+mpe5 = abs((e5)/yorg); 
+run;
+
+proc means n mean data=test_eval5; 
+var rmse5 mse5 mae5 mpe5; 
+run;
+
+
+
+/*Split the data into training and test sets*/
+/* Randomly split data into training (70%) and test (30%) sets */
+proc surveyselect data=MYCOVID19_updated out=train 
+                  samprate=0.7 
+                  outall
+                  seed=12345; 
+run;
+
+data test;
+    set train (where=(selected=0));
+run;
+
+data train;
+    set train (where=(selected=1));
+    drop selected;
+run;
+
+/*Model 1: Simple Regression Model with your choice of one independent variable*/
+/* Step 1: Define the training dataset */
+data train_data; 
+set train; 
+y = Pct_POSITIVE; 
+run; 
+
+/* Step 2: Regression using train data */
+proc reg data=train_data;
+model y = POPULATION; 
+output out=train_predicted p=yhat_train; 
+run; 
+ 
+
+/* Step 3: Use the model to predict on the test data */
+data test_data;
+set test;
+y = Pct_POSITIVE;
+run;
+
+proc reg data=test_data noprint;
+model y = POPULATION; 
+output out=predicted_data p=yhat; 
+run;
+
+/* Step 4: Evaluation of the predictions on the test cases */
+data test_eval; 
+set predicted_data; 
+yorg = Pct_POSITIVE;
+e1 = yorg - yhat;
+rmse1 = ((e1)**2)**0.5; 
+mse1 = (e1)**2; 
+mae1 = abs(e1); 
+mpe1 = abs((e1)/yorg); 
+run;
+
+proc means n mean data=test_eval; 
+var rmse1 mse1 mae1 mpe1; 
+run;
+
+/* Model 2: Regression Model with two independent variables: POP_65P and HOUS_NOINTERNET */
+
+/* Step 1: Define the training dataset */
+data train_data2; 
+set train; 
+y = Pct_POSITIVE; 
+run; 
+
+/* Step 2: Regression using train data with two independent variables */
+proc reg data=train_data2;
+model y = POP_65P HOUS_NOINTERNET; 
+output out=train_predicted2 p=yhat_train2; 
+run; 
+ 
+
+/* Step 3: Use the model to predict on the test data */
+data test_data2;
+set test;
+y = Pct_POSITIVE;
+run;
+
+proc reg data=test_data2 noprint;
+model y = POP_65P HOUS_NOINTERNET; 
+output out=predicted_data2 p=yhat2; 
+run;
+
+/* Step 4: Evaluation of the predictions on the test cases */
+data test_eval2; 
+set predicted_data2; 
+yorg = Pct_POSITIVE;
+e2 = yorg - yhat2;
+rmse2 = ((e2)**2)**0.5; 
+mse2 = (e2)**2; 
+mae2 = abs(e2); 
+mpe2 = abs((e2)/yorg); 
+run;
+
+proc means n mean data=test_eval2; 
+var rmse2 mse2 mae2 mpe2; 
+run;
+
+/* Model 3: Regression Model with all possible independent variables */
+
+/* Step 1: Define the training dataset */
+data train_data3; 
+set train; 
+y = Pct_POSITIVE; 
+run; 
+
+/* Step 2: Regression using train data with all independent variables */
+proc reg data=train_data3;
+model y = POPULATION POP_65P POP_LT18 ADULT_LIMITED_ENGLISH ADULT_SPANISH_LENG
+          POP_BELOWPOV POP_DISABILITY POP_MEDICAD POP_MEDICARE POP_HEALTHINS
+          HOUS_NOSMARTPHN HOUS_NOINTERNET AREA_LAND AREA_WATER; 
+output out=train_predicted3 p=yhat_train3; 
+run; 
+ 
+
+/* Step 3: Use the model to predict on the test data */
+data test_data3;
+set test;
+y = Pct_POSITIVE;
+run;
+
+proc reg data=test_data3 noprint;
+model y = POPULATION POP_65P POP_LT18 ADULT_LIMITED_ENGLISH ADULT_SPANISH_LENG
+          POP_BELOWPOV POP_DISABILITY POP_MEDICAD POP_MEDICARE POP_HEALTHINS
+          HOUS_NOSMARTPHN HOUS_NOINTERNET AREA_LAND AREA_WATER; 
+output out=predicted_data3 p=yhat3; 
+run;
+
+/* Step 4: Evaluation of the predictions on the test cases */
+data test_eval3; 
+set predicted_data3; 
+yorg = Pct_POSITIVE;
+e3 = yorg - yhat3;
+rmse3 = ((e3)**2)**0.5; 
+mse3 = (e3)**2; 
+mae3 = abs(e3); 
+mpe3 = abs((e3)/yorg); 
+run;
+
+proc means n mean data=test_eval3; 
+var rmse3 mse3 mae3 mpe3; 
+run;
+
+/* Model 4: Stepwise Regression */
+
+/* Step 1: Define the training dataset */
+data train_data4; 
+set train; 
+y = Pct_POSITIVE; 
+run; 
+
+/* Step 2: Regression using train data with stepwise selection */
+proc reg data=train_data4;
+model y = POPULATION POP_65P POP_LT18 ADULT_LIMITED_ENGLISH ADULT_SPANISH_LENG
+          POP_BELOWPOV POP_DISABILITY POP_MEDICAD POP_MEDICARE POP_HEALTHINS
+          HOUS_NOSMARTPHN HOUS_NOINTERNET AREA_LAND AREA_WATER / selection=stepwise; 
+output out=train_predicted4 p=yhat_train4; 
+run; 
+
+/* Step 3: Use the stepwise model to predict on the test data */
+/* Note: The variables selected in the stepwise model should be used here for prediction */
+data test_data4;
+set test;
+y = Pct_POSITIVE;
+run;
+
+/* */
+proc reg data=test_data4 noprint;
+model y = ADULT_SPANISH_LENG AREA_LAND POPULATION ADULT_LIMITED_ENGLISH HOUS_NOSMARTPHN POP_65P POP_MEDICARE POP_HEALTHINS POP_DISABILITY AREA_WATER; 
+output out=predicted_data4 p=yhat4; 
+run;
+
+
+/* Step 4: Evaluation of the predictions on the test cases */
+data test_eval4; 
+set predicted_data4; 
+yorg = Pct_POSITIVE;
+e4 = yorg - yhat4;
+rmse4 = ((e4)**2)**0.5; 
+mse4 = (e4)**2; 
+mae4 = abs(e4); 
+mpe4 = abs((e4)/yorg); 
+run;
+
+proc means n mean data=test_eval4; 
+var rmse4 mse4 mae4 mpe4; 
+run;
+
+
+/* Model 5: Adjusted R-Square Model */
+
+/* Step 1: Define the training dataset */
+data train_data5; 
+set train; 
+y = Pct_POSITIVE; 
+run; 
+
+/* Step 2: Regression using train data with adjusted R-square selection */
+proc reg data=train_data5;
+model y = POPULATION POP_65P POP_LT18 ADULT_LIMITED_ENGLISH ADULT_SPANISH_LENG
+          POP_BELOWPOV POP_DISABILITY POP_MEDICAD POP_MEDICARE POP_HEALTHINS
+          HOUS_NOSMARTPHN HOUS_NOINTERNET AREA_LAND AREA_WATER / selection=adjrsq; 
+output out=train_predicted5 p=yhat_train5; 
+run; 
+
+/* Step 3: Use the adjusted R-square model to predict on the test data */
+/* Note: The variables selected in the adjusted R-square model should be used here for prediction */
+data test_data5;
+set test;
+y = Pct_POSITIVE;
+run;
+
+proc reg data=test_data5 noprint;
+    model y = POPULATION POP_65P ADULT_LIMITED_ENGLISH ADULT_SPANISH_LENG POP_DISABILITY 
+             POP_MEDICARE POP_HEALTHINS HOUS_NOSMARTPHN HOUS_NOINTERNET AREA_LAND AREA_WATER; 
+    output out=predicted_data5 p=yhat5; 
+run;
+
+
+/* Step 4: Evaluation of the predictions on the test cases */
+data test_eval5; 
+set predicted_data5; 
+yorg = Pct_POSITIVE;
+e5 = yorg - yhat5;
+rmse5 = ((e5)**2)**0.5; 
+mse5 = (e5)**2; 
+mae5 = abs(e5); 
+mpe5 = abs((e5)/yorg); 
+run;
+
+proc means n mean data=test_eval5; 
+var rmse5 mse5 mae5 mpe5; 
+run;
+
+
